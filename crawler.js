@@ -151,17 +151,44 @@ async function playerPriceValue(data, Grade, concurrency = 10) {
 // 📦 DB 저장
 async function saveToDB(results) {
   await withDB(async () => {
-    const bulkOps = results.map(({ id, prices }) => ({
-      updateOne: {
-        filter: { id: String(id), "prices.grade": prices.grade },
-        update: { $set: { "prices.$[elem].price": prices.price } },
-        arrayFilters: [{ "elem.grade": prices.grade }],
-        upsert: true,
-      },
-    }));
+    const updateOps = [];
+    const insertOps = [];
 
-    if (bulkOps.length > 0) {
-      await Price.bulkWrite(bulkOps);
+    for (const { id, prices } of results) {
+      // 먼저 해당 grade가 존재하는지 검사 후 분기 처리
+      const priceDoc = await Price.findOne({
+        id: String(id),
+        "prices.grade": prices.grade,
+      });
+
+      if (priceDoc) {
+        // 이미 존재하는 grade → update
+        updateOps.push({
+          updateOne: {
+            filter: { id: String(id), "prices.grade": prices.grade },
+            update: { $set: { "prices.$.price": prices.price.trim() } },
+          },
+        });
+      } else {
+        // 존재하지 않는 grade → push
+        insertOps.push({
+          updateOne: {
+            filter: { id: String(id) },
+            update: {
+              $push: {
+                prices: { grade: prices.grade, price: prices.price.trim() },
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+    }
+
+    const ops = [...updateOps, ...insertOps];
+
+    if (ops.length > 0) {
+      await Price.bulkWrite(ops);
       console.log("📦 MongoDB updated");
     } else {
       console.log("⚠ No data to save");
@@ -239,6 +266,7 @@ async function main() {
       GRU_LIST,
       [1, 2, 3, 4, 5, 6, 7, 8]
     ); // playerPriceValue(데이터 , 강화등급)
+    console.log("GRU_RESULTS:", GRU_RESULTS);
     await saveToDB(GRU_RESULTS);
 
     // -------------------------------------------------------------------------------------------------------------------------------
